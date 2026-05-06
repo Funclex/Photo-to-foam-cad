@@ -3,80 +3,99 @@ import cv2
 import numpy as np
 import ezdxf
 import os
-from io import BytesIO
+from io import BytesIO, StringIO
+import base64
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "demo_key_6688")
+app.secret_key = "demo_key_6688"
 
-REFERENCE_LENGTH_MM = 25.4  # 1英寸硬币直径
+REFERENCE_LENGTH_MM = 25.4
 FOAM_THICKNESS_MM = 30
 MARGIN_MM = 5
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def preprocess_image(image_path):
-    img = cv2.imread(image_path)
+# 处理图片 + 画框 + 返回base64给前端
+def process_image_and_get_box(img_path):
+    img = cv2.imread(img_path)
     if img is None:
-        raise ValueError("Cannot read image file")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)  # 降低边缘检测阈值，更容易出轮廓
-    contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return img, contours
+        raise ValueError("Cannot read image")
 
-def get_pixel_to_mm_ratio(contours):
-    # 放宽硬币识别条件，同时用圆形度判断
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
+    kernel = np.ones((3,3), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 找硬币(圆形)
+    coin_box = None
+    product_box = None
+
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 300 < area < 15000:  # 大幅放宽面积范围
-            x, y, w, h = cv2.boundingRect(cnt)
-            aspect_ratio = w / h
-            # 圆形轮廓判断（宽高比接近1）
-            if 0.7 < aspect_ratio < 1.3:
-                pixel_length = max(w, h)
-                return REFERENCE_LENGTH_MM / pixel_length
-    raise ValueError("1-inch reference coin not found in photo")
+        if area < 200:
+            continue
+        x,y,w,h = cv2.boundingRect(cnt)
+        ratio = w / h
 
-def get_product_dimensions(contours, ratio):
-    # 找最大的轮廓作为产品，不设面积下限
+        # 硬币：接近圆形
+        if 0.75 < ratio < 1.25 and 500 < area < 20000:
+            coin_box = (x,y,w,h)
+
+    # 找最大物体 = 产品
     max_area = 0
-    product_contour = None
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area > max_area:
             max_area = area
-            product_contour = cnt
-    if product_contour is None:
-        raise ValueError("Can not detect product outline")
-    x, y, w_pixel, h_pixel = cv2.boundingRect(product_contour)
-    return w_pixel * ratio, h_pixel * ratio
+            x,y,w,h = cv2.boundingRect(cnt)
+            product_box = (x,y,w,h)
 
+    # 画红框硬币
+    if coin_box:
+        x,y,w,h = coin_box
+        cv2.rectangle(img, (x,y), (x+w, y+h), (0,0,255), 2)
+        cv2.putText(img,"Coin",(x,y-5),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,0,255),2)
+
+    # 画绿框产品
+    if product_box:
+        x,y,w,h = product_box
+        cv2.rectangle(img, (x,y), (x+w, y+h), (0,255,0), 2)
+        cv2.putText(img,"Product",(x,y-5),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
+
+    # 计算比例
+    if not coin_box:
+        raise ValueError("Coin not detected")
+    if not product_box:
+        raise ValueError("Product not detected")
+
+    cx,cy,cw,ch = coin_box
+    px,py,pw,ph = product_box
+
+    pixel_per_mm = max(cw,ch) / REFERENCE_LENGTH_MM
+    real_w = pw / pixel_per_mm
+    real_h = ph / pixel_per_mm
+
+    # 转base64传回前端
+    _, buf = cv2.imencode(".jpg", img)
+    b64_img = base64.b64encode(buf).decode()
+
+    return b64_img, real_w, real_h
+
+# 生成DXF
 def generate_dxf(w_mm, h_mm):
     board_w = w_mm + 2 * MARGIN_MM
     board_h = h_mm + 2 * MARGIN_MM
-    cutout_w = w_mm
-    cutout_h = h_mm
-
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
-    doc.layers.new(name="CUT", dxfattribs={"color": 7})
-    doc.layers.new(name="CUTOUT", dxfattribs={"color": 1})
+    doc.layers.new("CUT", dxfattribs={"color":7})
+    doc.layers.new("CUTOUT", dxfattribs={"color":1})
 
-    # 外框（泡沫板材切割线）
-    msp.add_lwpolyline([
-        (0, 0), (board_w, 0), (board_w, board_h), (0, board_h), (0, 0)
-    ], dxfattribs={"layer": "CUT"})
-
-    # 内框（产品挖空线）
-    offset_x = MARGIN_MM
-    offset_y = MARGIN_MM
-    msp.add_lwpolyline([
-        (offset_x, offset_y),
-        (offset_x + cutout_w, offset_y),
-        (offset_x + cutout_w, offset_y + cutout_h),
-        (offset_x, offset_y + cutout_h),
-        (offset_x, offset_y)
-    ], dxfattribs={"layer": "CUTOUT"})
+    msp.add_lwpolyline([(0,0),(board_w,0),(board_w,board_h),(0,board_h),(0,0)], dxfattribs={"layer":"CUT"})
+    ox = MARGIN_MM
+    oy = MARGIN_MM
+    msp.add_lwpolyline([(ox,oy),(ox+w_mm,oy),(ox+w_mm,oy+h_mm),(ox,oy+h_mm),(ox,oy)], dxfattribs={"layer":"CUTOUT"})
 
     buf = BytesIO()
     doc.write(buf)
@@ -87,31 +106,29 @@ def generate_dxf(w_mm, h_mm):
 def index():
     return render_template("index.html")
 
-@app.route("/upload", methods=["POST"])
-def upload():
+@app.route("/preview", methods=["POST"])
+def preview():
+    file = request.files["file"]
+    save_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(save_path)
+
     try:
-        if "file" not in request.files:
-            return jsonify(error="No file uploaded"), 400
-        file = request.files["file"]
-        if not file or file.filename == "":
-            return jsonify(error="Empty file"), 400
-
-        save_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(save_path)
-
-        _, contours = preprocess_image(save_path)
-        ratio = get_pixel_to_mm_ratio(contours)
-        w, h = get_product_dimensions(contours, ratio)
-        dxf_file = generate_dxf(w, h)
-
-        return send_file(
-            dxf_file,
-            as_attachment=True,
-            download_name="foam_pack.dxf",
-            mimetype="application/dxf"
-        )
+        b64_img, w, h = process_image_and_get_box(save_path)
+        return jsonify({
+            "ok": True,
+            "img": b64_img,
+            "width": round(w,2),
+            "height": round(h,2)
+        })
     except Exception as e:
-        return jsonify(error=str(e)), 400
+        return jsonify({"ok":False, "msg":str(e)})
+
+@app.route("/download_dxf", methods=["POST"])
+def download_dxf():
+    w = float(request.form["w"])
+    h = float(request.form["h"])
+    dxf_buf = generate_dxf(w, h)
+    return send_file(dxf_buf, as_attachment=True, download_name="foam_pack.dxf")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
