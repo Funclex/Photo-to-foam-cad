@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import ezdxf
 import os
-from io import BytesIO, StringIO
+from io import BytesIO
 import base64
 
 app = Flask(__name__)
@@ -15,67 +15,57 @@ MARGIN_MM = 5
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 处理图片 + 画框 + 返回base64给前端
 def process_image_and_get_box(img_path):
     img = cv2.imread(img_path)
     if img is None:
         raise ValueError("Cannot read image")
 
+    # 直接用灰度+二值化，降低所有门槛
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
-    kernel = np.ones((3,3), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 找硬币(圆形)
     coin_box = None
     product_box = None
 
+    # 找硬币：宽高比接近1，面积适中
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 200:
-            continue
-        x,y,w,h = cv2.boundingRect(cnt)
-        ratio = w / h
+        if 300 < area < 15000:
+            x, y, w, h = cv2.boundingRect(cnt)
+            ratio = w / h
+            if 0.7 < ratio < 1.3:
+                coin_box = (x, y, w, h)
+                break
 
-        # 硬币：接近圆形
-        if 0.75 < ratio < 1.25 and 500 < area < 20000:
-            coin_box = (x,y,w,h)
-
-    # 找最大物体 = 产品
+    # 找最大的轮廓，直接当产品
     max_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area > max_area:
             max_area = area
-            x,y,w,h = cv2.boundingRect(cnt)
-            product_box = (x,y,w,h)
+            x, y, w, h = cv2.boundingRect(cnt)
+            product_box = (x, y, w, h)
 
-    # 画红框硬币
-    if coin_box:
-        x,y,w,h = coin_box
-        cv2.rectangle(img, (x,y), (x+w, y+h), (0,0,255), 2)
-        cv2.putText(img,"Coin",(x,y-5),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,0,255),2)
-
-    # 画绿框产品
-    if product_box:
-        x,y,w,h = product_box
-        cv2.rectangle(img, (x,y), (x+w, y+h), (0,255,0), 2)
-        cv2.putText(img,"Product",(x,y-5),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
-
-    # 计算比例
     if not coin_box:
         raise ValueError("Coin not detected")
     if not product_box:
         raise ValueError("Product not detected")
 
-    cx,cy,cw,ch = coin_box
-    px,py,pw,ph = product_box
+    # 画红框硬币、绿框产品
+    x, y, w, h = coin_box
+    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
+    cv2.putText(img, "Coin", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    pixel_per_mm = max(cw,ch) / REFERENCE_LENGTH_MM
-    real_w = pw / pixel_per_mm
-    real_h = ph / pixel_per_mm
+    x, y, w, h = product_box
+    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+    cv2.putText(img, "Product", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # 计算实际尺寸
+    cx, cy, cw, ch = coin_box
+    pixel_per_mm = max(cw, ch) / REFERENCE_LENGTH_MM
+    real_w = w / pixel_per_mm
+    real_h = h / pixel_per_mm
 
     # 转base64传回前端
     _, buf = cv2.imencode(".jpg", img)
@@ -83,19 +73,17 @@ def process_image_and_get_box(img_path):
 
     return b64_img, real_w, real_h
 
-# 生成DXF
 def generate_dxf(w_mm, h_mm):
     board_w = w_mm + 2 * MARGIN_MM
     board_h = h_mm + 2 * MARGIN_MM
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
-    doc.layers.new("CUT", dxfattribs={"color":7})
-    doc.layers.new("CUTOUT", dxfattribs={"color":1})
+    doc.layers.new("CUT", dxfattribs={"color": 7})
+    doc.layers.new("CUTOUT", dxfattribs={"color": 1})
 
-    msp.add_lwpolyline([(0,0),(board_w,0),(board_w,board_h),(0,board_h),(0,0)], dxfattribs={"layer":"CUT"})
-    ox = MARGIN_MM
-    oy = MARGIN_MM
-    msp.add_lwpolyline([(ox,oy),(ox+w_mm,oy),(ox+w_mm,oy+h_mm),(ox,oy+h_mm),(ox,oy)], dxfattribs={"layer":"CUTOUT"})
+    msp.add_lwpolyline([(0,0), (board_w,0), (board_w,board_h), (0,board_h), (0,0)], dxfattribs={"layer": "CUT"})
+    ox, oy = MARGIN_MM, MARGIN_MM
+    msp.add_lwpolyline([(ox,oy), (ox+w_mm,oy), (ox+w_mm,oy+h_mm), (ox,oy+h_mm), (ox,oy)], dxfattribs={"layer": "CUTOUT"})
 
     buf = BytesIO()
     doc.write(buf)
@@ -121,7 +109,7 @@ def preview():
             "height": round(h,2)
         })
     except Exception as e:
-        return jsonify({"ok":False, "msg":str(e)})
+        return jsonify({"ok": False, "msg": str(e)})
 
 @app.route("/download_dxf", methods=["POST"])
 def download_dxf():
@@ -131,4 +119,4 @@ def download_dxf():
     return send_file(dxf_buf, as_attachment=True, download_name="foam_pack.dxf")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
