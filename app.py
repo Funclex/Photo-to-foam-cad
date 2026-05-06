@@ -8,7 +8,7 @@ from io import BytesIO
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "demo_key_6688")
 
-REFERENCE_LENGTH_MM = 25.4
+REFERENCE_LENGTH_MM = 25.4  # 1英寸硬币直径
 FOAM_THICKNESS_MM = 30
 MARGIN_MM = 5
 UPLOAD_FOLDER = "uploads"
@@ -20,25 +20,30 @@ def preprocess_image(image_path):
         raise ValueError("Cannot read image file")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 50, 150)
+    edges = cv2.Canny(blurred, 30, 100)  # 降低边缘检测阈值，更容易出轮廓
     contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     return img, contours
 
 def get_pixel_to_mm_ratio(contours):
+    # 放宽硬币识别条件，同时用圆形度判断
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 800 < area < 5000:
+        if 300 < area < 15000:  # 大幅放宽面积范围
             x, y, w, h = cv2.boundingRect(cnt)
-            pixel_length = max(w, h)
-            return REFERENCE_LENGTH_MM / pixel_length
+            aspect_ratio = w / h
+            # 圆形轮廓判断（宽高比接近1）
+            if 0.7 < aspect_ratio < 1.3:
+                pixel_length = max(w, h)
+                return REFERENCE_LENGTH_MM / pixel_length
     raise ValueError("1-inch reference coin not found in photo")
 
 def get_product_dimensions(contours, ratio):
+    # 找最大的轮廓作为产品，不设面积下限
     max_area = 0
     product_contour = None
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area > max_area and area > 10000:
+        if area > max_area:
             max_area = area
             product_contour = cnt
     if product_contour is None:
@@ -57,10 +62,12 @@ def generate_dxf(w_mm, h_mm):
     doc.layers.new(name="CUT", dxfattribs={"color": 7})
     doc.layers.new(name="CUTOUT", dxfattribs={"color": 1})
 
+    # 外框（泡沫板材切割线）
     msp.add_lwpolyline([
         (0, 0), (board_w, 0), (board_w, board_h), (0, board_h), (0, 0)
     ], dxfattribs={"layer": "CUT"})
 
+    # 内框（产品挖空线）
     offset_x = MARGIN_MM
     offset_y = MARGIN_MM
     msp.add_lwpolyline([
