@@ -3,80 +3,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo to Foam Packaging CAD | CNC DXF</title>
+    <title>Photo To CAD | Real Time Detection</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
-    <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md">
-        <h1 class="text-2xl font-bold text-center mb-4">Photo to Foam Packaging CAD</h1>
-        <p class="text-sm text-gray-600 mb-4 text-center">
-            Put a <strong>1-inch coin (25.4mm)</strong> next to your product<br>
-            Auto generate CNC foam DXF file
-        </p>
+<body class="bg-gray-100 min-h-screen p-4">
+    <div class="max-w-md mx-auto bg-white rounded-xl shadow p-6">
+        <h1 class="text-xl font-bold text-center mb-4">Photo → Foam CAD (Real-time Box)</h1>
+        <p class="text-sm text-gray-500 text-center mb-4">Put 1-inch coin next to product</p>
 
         <input type="file" id="fileInput" accept="image/*" class="hidden">
-        <label for="fileInput" class="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center py-3 rounded-lg cursor-pointer transition">
-            Select Product Photo
+        <label for="fileInput" class="block bg-blue-600 text-white text-center py-3 rounded-lg cursor-pointer">
+            Upload Photo
         </label>
 
-        <div id="previewArea" class="mt-4 hidden">
-            <img id="previewImg" class="w-full h-auto rounded-lg border">
+        <!-- 识别后带红框绿框的图 这里会显示 -->
+        <div class="mt-4 hidden" id="resultBox">
+            <img id="detectImg" class="w-full border rounded-lg">
+            <div class="text-center mt-2 text-sm">
+                <span class="text-red-600">● Coin</span>
+                <span class="text-green-600 ml-3">● Product</span>
+            </div>
+            <div class="mt-2 text-sm text-gray-700 text-center">
+                Size: <span id="sizeText">-</span>
+            </div>
         </div>
 
-        <button id="submitBtn" class="mt-4 w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-            Generate DXF CAD
+        <button id="dxfBtn" class="mt-4 w-full bg-green-600 text-white py-3 rounded-lg hidden">
+            Download DXF CAD
         </button>
 
         <div id="status" class="mt-3 text-sm text-center"></div>
     </div>
 
     <script>
-        const fileInput = document.getElementById("fileInput");
-        const previewArea = document.getElementById("previewArea");
-        const previewImg = document.getElementById("previewImg");
-        const submitBtn = document.getElementById("submitBtn");
-        const status = document.getElementById("status");
-        let selectedFile = null;
+        let finalW = 0;
+        let finalH = 0;
 
-        fileInput.addEventListener("change", e => {
-            selectedFile = e.target.files[0];
-            if(!selectedFile) return;
-            const reader = new FileReader();
-            reader.onload = ev => {
-                previewImg.src = ev.target.result;
-                previewArea.classList.remove("hidden");
-                submitBtn.disabled = false;
-                status.innerText = "";
-            };
-            reader.readAsDataURL(selectedFile);
+        const fileInput = document.getElementById('fileInput');
+        const resultBox = document.getElementById('resultBox');
+        const detectImg = document.getElementById('detectImg');
+        const sizeText = document.getElementById('sizeText');
+        const dxfBtn = document.getElementById('dxfBtn');
+        const status = document.getElementById('status');
+
+        fileInput.addEventListener('change', async e => {
+            const f = e.target.files[0];
+            if(!f) return;
+            status.innerText = "Detecting coin & product...";
+            resultBox.classList.add('hidden');
+            dxfBtn.classList.add('hidden');
+
+            const form = new FormData();
+            form.append('file', f);
+
+            let res = await fetch('/preview', {method:'POST', body:form});
+            let data = await res.json();
+
+            if(!data.ok){
+                status.innerText = "❌ " + data.msg;
+                return;
+            }
+
+            // 展示带红框绿框的图片
+            detectImg.src = "data:image/jpeg;base64," + data.img;
+            sizeText.innerText = data.width + " mm × " + data.height + " mm";
+            finalW = data.width;
+            finalH = data.height;
+
+            resultBox.classList.remove('hidden');
+            dxfBtn.classList.remove('hidden');
+            status.innerText = "✅ Detected successfully";
         });
 
-        submitBtn.addEventListener("click", async () => {
-            if(!selectedFile) return;
-            status.innerText = "Processing...";
-            submitBtn.disabled = true;
+        dxfBtn.addEventListener('click', async () => {
+            status.innerText = "Generating DXF...";
+            const form = new FormData();
+            form.append("w", finalW);
+            form.append("h", finalH);
 
-            const formData = new FormData();
-            formData.append("file", selectedFile);
-
-            try {
-                const res = await fetch("/upload", { method:"POST", body:formData });
-                const json = await res.json().catch(()=>null);
-                if(!res.ok) throw new Error(json?.error || "Server error");
-
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "foam_pack.dxf";
-                a.click();
-                URL.revokeObjectURL(url);
-                status.innerText = "✅ DXF downloaded successfully";
-            } catch(err) {
-                status.innerText = "❌ " + err.message;
-            } finally {
-                submitBtn.disabled = false;
-            }
+            let res = await fetch('/download_dxf', {method:'POST', body:form});
+            let blob = await res.blob();
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = "foam_pack.dxf";
+            a.click();
+            URL.revokeObjectURL(url);
+            status.innerText = "✅ DXF downloaded";
         });
     </script>
 </body>
