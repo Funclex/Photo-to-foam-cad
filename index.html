@@ -3,20 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo To CAD | Real Time Detection</title>
+    <title>Photo → Foam CAD (Real-time Box)</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen p-4">
     <div class="max-w-md mx-auto bg-white rounded-xl shadow p-6">
-        <h1 class="text-xl font-bold text-center mb-4">Photo → Foam CAD (Real-time Box)</h1>
-        <p class="text-sm text-gray-500 text-center mb-4">Put 1-inch coin next to product</p>
+        <h1 class="text-xl font-bold text-center mb-4">Photo → Foam CAD</h1>
+        <p class="text-sm text-gray-500 text-center mb-4">Upload photo with 1-inch coin</p>
 
         <input type="file" id="fileInput" accept="image/*" class="hidden">
         <label for="fileInput" class="block bg-blue-600 text-white text-center py-3 rounded-lg cursor-pointer">
             Upload Photo
         </label>
 
-        <!-- 识别后带红框绿框的图 这里会显示 -->
         <div class="mt-4 hidden" id="resultBox">
             <img id="detectImg" class="w-full border rounded-lg">
             <div class="text-center mt-2 text-sm">
@@ -48,7 +47,7 @@
 
         fileInput.addEventListener('change', async e => {
             const f = e.target.files[0];
-            if(!f) return;
+            if (!f) return;
             status.innerText = "Detecting coin & product...";
             resultBox.classList.add('hidden');
             dxfBtn.classList.add('hidden');
@@ -56,15 +55,14 @@
             const form = new FormData();
             form.append('file', f);
 
-            let res = await fetch('/preview', {method:'POST', body:form});
+            let res = await fetch('/preview', { method: 'POST', body: form });
             let data = await res.json();
 
-            if(!data.ok){
+            if (!data.ok) {
                 status.innerText = "❌ " + data.msg;
                 return;
             }
 
-            // 展示带红框绿框的图片
             detectImg.src = "data:image/jpeg;base64," + data.img;
             sizeText.innerText = data.width + " mm × " + data.height + " mm";
             finalW = data.width;
@@ -81,7 +79,7 @@
             form.append("w", finalW);
             form.append("h", finalH);
 
-            let res = await fetch('/download_dxf', {method:'POST', body:form});
+            let res = await fetch('/download_dxf', { method: 'POST', body: form });
             let blob = await res.blob();
             let url = URL.createObjectURL(blob);
             let a = document.createElement("a");
