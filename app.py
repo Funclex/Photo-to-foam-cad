@@ -9,7 +9,7 @@ import base64
 app = Flask(__name__)
 app.secret_key = "demo_key_6688"
 
-# 配置参数（已经为你的照片调好了）
+# 配置参数（为你的照片调好了）
 REFERENCE_LENGTH_MM = 25.4
 FOAM_THICKNESS_MM = 30
 MARGIN_MM = 5
@@ -21,10 +21,10 @@ def process_image_and_get_box(img_path):
     if img is None:
         raise ValueError("Cannot read image")
 
-    # 超宽松识别逻辑，专门适配你的照片
+    # 专门适配你这张照片的识别逻辑
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # 直接用全局二值化，不再用自适应，适配你的浅色背景
-    _, binary = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY_INV)
+    # 用反色二值化，强制把浅色背景和深色物体分开
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     coin_box = None
@@ -33,16 +33,14 @@ def process_image_and_get_box(img_path):
     # 1. 找硬币：放宽所有限制
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        # 把硬币的面积范围放宽到 100-20000
         if 100 < area < 20000:
             x, y, w, h = cv2.boundingRect(cnt)
             ratio = w / h
-            # 宽高比放宽到 0.6-1.4，只要接近圆形就认为是硬币
             if 0.6 < ratio < 1.4:
                 coin_box = (x, y, w, h)
                 break
 
-    # 2. 找产品：直接取图片里最大的轮廓，不管其他条件
+    # 2. 找产品：直接取图片里最大的轮廓
     max_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
@@ -94,7 +92,7 @@ def generate_dxf(w_mm, h_mm):
     buf.seek(0)
     return buf
 
-# 前端直接写在代码里，不用templates文件夹
+# 关键：前端直接写在代码里，不用templates文件夹
 @app.route("/")
 def index():
     return render_template_string("""
