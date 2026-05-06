@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, render_template, jsonify
+from flask import Flask, request, render_template_string, jsonify
 import cv2
 import numpy as np
 import ezdxf
@@ -20,7 +20,7 @@ def process_image_and_get_box(img_path):
     if img is None:
         raise ValueError("Cannot read image")
 
-    # 直接用灰度+二值化，降低所有门槛
+    # 超宽松识别逻辑，适配你的照片
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -28,7 +28,7 @@ def process_image_and_get_box(img_path):
     coin_box = None
     product_box = None
 
-    # 找硬币：宽高比接近1，面积适中
+    # 找硬币
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if 300 < area < 15000:
@@ -38,7 +38,7 @@ def process_image_and_get_box(img_path):
                 coin_box = (x, y, w, h)
                 break
 
-    # 找最大的轮廓，直接当产品
+    # 找最大物体
     max_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
@@ -52,7 +52,7 @@ def process_image_and_get_box(img_path):
     if not product_box:
         raise ValueError("Product not detected")
 
-    # 画红框硬币、绿框产品
+    # 画框
     x, y, w, h = coin_box
     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
     cv2.putText(img, "Coin", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -61,13 +61,13 @@ def process_image_and_get_box(img_path):
     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
     cv2.putText(img, "Product", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    # 计算实际尺寸
+    # 计算尺寸
     cx, cy, cw, ch = coin_box
     pixel_per_mm = max(cw, ch) / REFERENCE_LENGTH_MM
     real_w = w / pixel_per_mm
     real_h = h / pixel_per_mm
 
-    # 转base64传回前端
+    # 转base64
     _, buf = cv2.imencode(".jpg", img)
     b64_img = base64.b64encode(buf).decode()
 
@@ -90,9 +90,105 @@ def generate_dxf(w_mm, h_mm):
     buf.seek(0)
     return buf
 
+# 关键：把前端直接写在代码里，不用管templates文件夹
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template_string("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo → Foam CAD</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4">
+    <div class="max-w-md mx-auto bg-white rounded-xl shadow p-6">
+        <h1 class="text-xl font-bold text-center mb-4">Photo → Foam CAD</h1>
+        <p class="text-sm text-gray-500 text-center mb-4">Upload photo with 1-inch coin</p>
+
+        <input type="file" id="fileInput" accept="image/*" class="hidden">
+        <label for="fileInput" class="block bg-blue-600 text-white text-center py-3 rounded-lg cursor-pointer">
+            Upload Photo
+        </label>
+
+        <div class="mt-4 hidden" id="resultBox">
+            <img id="detectImg" class="w-full border rounded-lg">
+            <div class="text-center mt-2 text-sm">
+                <span class="text-red-600">● Coin</span>
+                <span class="text-green-600 ml-3">● Product</span>
+            </div>
+            <div class="mt-2 text-sm text-gray-700 text-center">
+                Size: <span id="sizeText">-</span>
+            </div>
+        </div>
+
+        <button id="dxfBtn" class="mt-4 w-full bg-green-600 text-white py-3 rounded-lg hidden">
+            Download DXF CAD
+        </button>
+
+        <div id="status" class="mt-3 text-sm text-center"></div>
+    </div>
+
+    <script>
+        let finalW = 0;
+        let finalH = 0;
+
+        const fileInput = document.getElementById('fileInput');
+        const resultBox = document.getElementById('resultBox');
+        const detectImg = document.getElementById('detectImg');
+        const sizeText = document.getElementById('sizeText');
+        const dxfBtn = document.getElementById('dxfBtn');
+        const status = document.getElementById('status');
+
+        fileInput.addEventListener('change', async e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            status.innerText = "Detecting coin & product...";
+            resultBox.classList.add('hidden');
+            dxfBtn.classList.add('hidden');
+
+            const form = new FormData();
+            form.append('file', f);
+
+            let res = await fetch('/preview', { method: 'POST', body: form });
+            let data = await res.json();
+
+            if (!data.ok) {
+                status.innerText = "❌ " + data.msg;
+                return;
+            }
+
+            detectImg.src = "data:image/jpeg;base64," + data.img;
+            sizeText.innerText = data.width + " mm × " + data.height + " mm";
+            finalW = data.width;
+            finalH = data.height;
+
+            resultBox.classList.remove('hidden');
+            dxfBtn.classList.remove('hidden');
+            status.innerText = "✅ Detected successfully";
+        });
+
+        dxfBtn.addEventListener('click', async () => {
+            status.innerText = "Generating DXF...";
+            const form = new FormData();
+            form.append("w", finalW);
+            form.append("h", finalH);
+
+            let res = await fetch('/download_dxf', { method: 'POST', body: form });
+            let blob = await res.blob();
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = "foam_pack.dxf";
+            a.click();
+            URL.revokeObjectURL(url);
+            status.innerText = "✅ DXF downloaded";
+        });
+    </script>
+</body>
+</html>
+    """)
 
 @app.route("/preview", methods=["POST"])
 def preview():
