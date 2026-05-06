@@ -9,7 +9,6 @@ import base64
 app = Flask(__name__)
 app.secret_key = "demo_key_6688"
 
-# 配置参数（为你的照片调好了）
 REFERENCE_LENGTH_MM = 25.4
 FOAM_THICKNESS_MM = 30
 MARGIN_MM = 5
@@ -21,26 +20,31 @@ def process_image_and_get_box(img_path):
     if img is None:
         raise ValueError("Cannot read image")
 
-    # 专门适配你这张照片的识别逻辑
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # 用反色二值化，强制把浅色背景和深色物体分开
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 适配浅色背景+深色物体的识别逻辑
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    lower_dark = np.array([0, 0, 0])
+    upper_dark = np.array([180, 255, 200])
+    mask = cv2.inRange(hsv, lower_dark, upper_dark)
+    kernel = np.ones((5,5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     coin_box = None
     product_box = None
 
-    # 1. 找硬币：放宽所有限制
+    # 找硬币
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 100 < area < 20000:
+        if 300 < area < 10000:
             x, y, w, h = cv2.boundingRect(cnt)
             ratio = w / h
-            if 0.6 < ratio < 1.4:
+            if 0.7 < ratio < 1.3:
                 coin_box = (x, y, w, h)
                 break
 
-    # 2. 找产品：直接取图片里最大的轮廓
+    # 找最大轮廓作为产品
     max_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
@@ -54,7 +58,7 @@ def process_image_and_get_box(img_path):
     if not product_box:
         raise ValueError("Product not detected")
 
-    # 3. 画红框（硬币）和绿框（产品）
+    # 画框
     x, y, w, h = coin_box
     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
     cv2.putText(img, "Coin", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -63,13 +67,13 @@ def process_image_and_get_box(img_path):
     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
     cv2.putText(img, "Product", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    # 4. 计算实际尺寸
+    # 计算尺寸
     cx, cy, cw, ch = coin_box
     pixel_per_mm = max(cw, ch) / REFERENCE_LENGTH_MM
     real_w = w / pixel_per_mm
     real_h = h / pixel_per_mm
 
-    # 转base64传回前端
+    # 转base64
     _, buf = cv2.imencode(".jpg", img)
     b64_img = base64.b64encode(buf).decode()
 
@@ -92,7 +96,7 @@ def generate_dxf(w_mm, h_mm):
     buf.seek(0)
     return buf
 
-# 关键：前端直接写在代码里，不用templates文件夹
+# 前端直接内嵌，无外部依赖
 @app.route("/")
 def index():
     return render_template_string("""
